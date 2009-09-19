@@ -53,7 +53,6 @@
        '((9 . s) e c d)
        (secd 's 'e '(LDC 5 ATOM SEL (LDC 9 JOIN) (LDC 7 JOIN) . c) 'd))
 
-
 (test* "((lambda (x y) (+ x y)) 2 3)"
        '((5 . s) e c d)
        (secd 's 'e
@@ -69,7 +68,6 @@
                                AP
                                RTN)
                           AP) 'd))
-
 
 (test-section "secd compiler")
 
@@ -123,7 +121,6 @@
                   RTN)
              AP)
        (compile () '((lambda (z) ((lambda (x y) (+ (- x y) z)) 3 5)) 6)))
-
 
 (test-section "run")
 
@@ -197,13 +194,11 @@
                         LDF (NIL LDC 3 CONS LD (1 . 1) AP RTN)
                         AP) 'd)))
 
-
 (test* "recursive length in COMPUT325: SECD Virtual Machine"
        '((3 . s) e c d)
        (secd 's 'e
              '(DUM
-               NIL LDF (
-                        LD (1 . 1) NULL SEL
+               NIL LDF (LD (1 . 1) NULL SEL
                            (LD (1 . 2) JOIN)
                            (NIL LDC 1 LD (1 . 2) + CONS
                                 LD (1 . 1) CDR CONS
@@ -239,8 +234,84 @@
                          AP RTN)
                 RAP RTN) AP . c) 'd))
 
+(test-section "tail")
 
+(test* "fact-recur"
+       '((3628800 . s) e c d)
+       (run '(letrec ((fact (lambda (n res)
+                              (if (= n 0)
+                                  res
+                                  (fact (- n 1) (* n res))))))
+               (fact 10 1))))
 
+;; fact
+(secd 's 'e (compile () '(letrec ((fact (lambda (n res)
+                                                (if (= n 0)
+                                                    res
+                                                    (fact (- n 1) (* n res))))))
+                                 (fact 20 1))) 'd)
+
+;; gauche fib
+(with-profiler
+ (letrec ((fib (lambda (n)
+                 (if (< n 2)
+                     n
+                     (+ (fib (- n 1)) (fib (- n 2)))))))
+   (fib 20)))
+
+;; vm fib
+#;(let1 c (compile () '(letrec ((fib (lambda (n)
+                                     (if (< n 2)
+                                         n
+                                         (+ (fib (- n 1)) (fib (- n 2)))))))
+                       (fib 20)))
+  (with-profiler
+   (secd 's 'e c 'd)))
+
+;; fib 20
+(let1 c '(DUM NIL
+                  LDF (LDC 2 LD (1 . 1) <
+                           SEL
+                           (LD (1 . 1) JOIN)
+                           (NIL LDC 2 LD (1 . 1) - CONS LD (2 . 1) AP
+                                NIL LDC 1 LD (1 . 1) - CONS LD (2 . 1) AP + JOIN) RTN)
+                  CONS LDF (NIL LDC 20 CONS LD (1 . 1) AP RTN) RAP)
+  (with-profiler
+   (secd 's 'e c 'd)))
+
+;; fib 20 recur by hand
+(let1 c '(DUM NIL
+              LDF (LDC 2 LD (1 . 1) <
+                       SELR
+                       (LD (1 . 1) RTN)
+                       (NIL LDC 2 LD (1 . 1) - CONS LD (2 . 1) AP
+                            NIL LDC 1 LD (1 . 1) - CONS LD (2 . 1) AP + RTN)
+                       )
+              CONS LDF (NIL LDC 20 CONS LD (1 . 1) TAPC) RAP)
+  (with-profiler
+   (secd 's 'e c 'd)))
+
+;; normal ver.
+(with-profiler
+ (secd 's 'e '(DUM NIL
+                   LDF
+                   (LDC 0 LD (1 . 1) =
+                        SEL
+                        (LD (1 . 2) JOIN)
+                        (NIL LD (1 . 2) LD (1 . 1) * CONS LDC 1 LD (1 . 1) - CONS LD (2 . 1) AP JOIN)
+                        RTN)
+                   CONS LDF (NIL LDC 1 CONS LDC 100 CONS LD (1 . 1) AP RTN) RAP) 'd))
+
+;; tail call ver
+(with-profiler
+ (secd 's 'e '(DUM NIL
+                   LDF
+                   (LDC 0 LD (1 . 1) =
+                        SELR
+                        (LD (1 . 2) RTN)
+                        (NIL LD (1 . 2) LD (1 . 1) * CONS LDC 1 LD (1 . 1) - CONS LD (2 . 1) TAPC)
+                        )
+                   CONS LDF (NIL LDC 1 CONS LDC 100 CONS LD (1 . 1) TAPC) RAP) 'd))
 
 
 (test-end)
