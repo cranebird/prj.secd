@@ -88,8 +88,9 @@
   "make vm instance"
   (make-instance 'vm :memory (make-memory size)))
 
-
 ;; 1 word = 32 bit = 4 byte
+
+
 (defmethod print-object ((vm vm) stream)
   (print-unreadable-object (vm stream)
     (format stream "vm: s:[0x~8,'0,,x] e:~a c:~a d:~a~%"
@@ -97,14 +98,16 @@
             (environment-of vm)
             (control-of vm)
             (dump-of vm))
-    (loop for obj across (reverse (memory-of vm))
-       for i downfrom (1- (length (memory-of vm)))
+    (format stream "     low address~%")
+    (loop for i from 0 below (length (memory-of vm))
        for addr = (* i 4)
        do
-       (format stream "~a[0x~8,'0,,x] ~6,,,a | ~a~%"
-               (if (eq (fp-of vm) addr) "*" " ")
-               ;; addr type value
-               addr (scm-type-of obj) (scm-value-of obj)))))
+       (format stream "~a|~6,,,a|~6,,,a| 0x~8,'0,,x~%" ;; |FIXNUM|  3| addr
+               (if (eq (fp-of vm) addr) "ap->" "    ")
+               (scm-type-of (aref (memory-of vm) i))
+               (scm-value-of (aref (memory-of vm) i))
+               addr))
+    (format stream "     high address~%")))
 
 (defun valid-addressp (addr)
   "return t if address valid."
@@ -238,27 +241,17 @@ expand to: (cond ((bit-match val mask match) action) ...)"
   (:documentation "Car"))
 
 (defmethod vm-car ((vm vm) addr)
-  (assert (eq (scm-type-of addr) 'pair) (addr)
-          "Expect pair but: ~a" (scm-type-of addr))
-  (memory-ref vm (scm-value-of addr)))
+  (with-scm (val type) addr
+    (assert (eq type 'pair) (addr) "Expect pair but: ~a" type)
+    (memory-ref vm val)))
 
 (defgeneric vm-cdr (vm addr)
   (:documentation "Cdr"))
 
 (defmethod vm-cdr ((vm vm) addr)
-  (assert (eq (scm-type-of addr) 'pair) (addr)
-          "Expect pair but: ~a" (scm-type-of addr))
-  (memory-ref vm (+ (scm-value-of addr) 4)))
-
-;; (defmethod vm-stack-push ((vm vm) x)
-;;   (setf (stack-of vm) (vm-cons vm x (logior (stack-of vm) #b001)))
-;;   vm)
-
-;; (defmethod vm-stack-pop ((vm vm))
-;;   (let ((top (memory-ref vm (scm-value-of (stack-of vm)))))
-;;     (decf (stack-of vm) 8)
-;;     top
-;;     ))
+  (with-scm (val type) addr
+    (assert (eq type 'pair) (addr) "Expect pair but: ~a" type)
+    (memory-ref vm (+ val 4))))
 
 ;; define Operation
 (defmacro define-operator (name (vm &rest params) &body body)
