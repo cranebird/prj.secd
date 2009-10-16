@@ -88,13 +88,11 @@
   "make vm instance"
   (make-instance 'vm :memory (make-memory size)))
 
-;; 1 word = 32 bit = 4 byte
-
-
 (defmethod print-object ((vm vm) stream)
   (print-unreadable-object (vm stream)
-    (format stream "vm: s:[0x~8,'0,,x] e:~a c:~a d:~a~%"
-            (stack-of vm)
+    (format stream "vm: s:~a e:~a c:~a d:~a~%"
+            (with-output-to-string (out)
+                (print-scm-object vm (stack-of vm) out))
             (environment-of vm)
             (control-of vm)
             (dump-of vm))
@@ -102,8 +100,9 @@
     (loop for i from 0 below (length (memory-of vm))
        for addr = (* i 4)
        do
-       (format stream "~a|~6,,,a|~6,,,a| 0x~8,'0,,x~%" ;; |FIXNUM|  3| addr
+       (format stream "~a|~6,,,a|~8,,,@a| 0x~8,'0,,x~%"
                (if (eq (fp-of vm) addr) "ap->" "    ")
+               ;; TODO add error handler
                (scm-type-of (aref (memory-of vm) i))
                (scm-value-of (aref (memory-of vm) i))
                addr))
@@ -111,7 +110,7 @@
 
 (defun valid-addressp (addr)
   "return t if address valid."
-  (zerop (mod addr 4)))
+  (and (integerp addr) (>= addr 0) (zerop (mod addr 4))))
 
 (defun assert-valid-address (addr)
   "assert for address"
@@ -132,10 +131,14 @@
   (setf (aref (memory-of vm) (/ addr 4)) new-val))
 
 (defmethod (setf fp-of) (new-fp (vm vm))
-  (assert (< (/ new-fp 4) (length (memory-of vm))) (new-fp)
-          "invalid setf fp: new-fp: ~a, memory length: ~a"
-          new-fp (length (memory-of vm)))
   (with-slots (fp) vm
+    (assert (and
+             (integerp new-fp)
+             (>= new-fp 0)
+             (< (/ new-fp 4) (length (memory-of vm))))
+            (new-fp)
+            "invalid setf fp: new-fp: ~a, memory length: ~a"
+            new-fp (length (memory-of vm)))
     (setf fp new-fp)))
 
 ;; Tag
@@ -215,9 +218,7 @@ expand to: (cond ((bit-match val mask match) action) ...)"
            (t
             (format *error-output* "~%other:~a~%" cdr-type)
             (format stream " . ") ;; space dot space
-            (print-scm-object vm cdr-val stream)
-            )
-           ))
+            (print-scm-object vm cdr-val stream))))
        (unless in-list
          (format stream ")"))))))
 
@@ -242,16 +243,26 @@ expand to: (cond ((bit-match val mask match) action) ...)"
 
 (defmethod vm-car ((vm vm) addr)
   (with-scm (val type) addr
-    (assert (eq type 'pair) (addr) "Expect pair but: ~a" type)
+    (assert (eq type 'pair) (addr) "vm-car expect pair but got: ~a" type)
     (memory-ref vm val)))
+
+(defmethod (setf vm-car) (new-car (vm vm) addr)
+  (with-scm (val type) addr
+    (assert (eq type 'pair) (addr) "setf vm-car expect pair but got: ~a" type)
+    (setf (memory-ref vm val) new-car)))
 
 (defgeneric vm-cdr (vm addr)
   (:documentation "Cdr"))
 
 (defmethod vm-cdr ((vm vm) addr)
   (with-scm (val type) addr
-    (assert (eq type 'pair) (addr) "Expect pair but: ~a" type)
+    (assert (eq type 'pair) (addr) "vm-cdr expect pair but got: ~a" type)
     (memory-ref vm (+ val 4))))
+
+(defmethod (setf vm-cdr) (new-cdr (vm vm) addr)
+  (with-scm (val type) addr
+    (assert (eq type 'pair) (addr) "setf vm-cdr expect pair but got: ~a" type)
+    (setf (memory-ref vm (+ val 4)) new-cdr)))
 
 ;; define Operation
 (defmacro define-operator (name (vm &rest params) &body body)
@@ -260,6 +271,7 @@ expand to: (cond ((bit-match val mask match) action) ...)"
        ,@body
        ,vm)))
 
+;; todo not tested
 (define-operator nil-op (vm)
   (setf (stack-of vm)
         (scm-value-of (vm-cons vm (immediate-rep ()) (immediate-rep ())))))
@@ -276,15 +288,11 @@ expand to: (cond ((bit-match val mask match) action) ...)"
         (b nil))
     (setq a (scm-value-of (vm-car vm (stack-of vm))))
     (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
-
     (setq b (scm-value-of (vm-car vm (stack-of vm))))
     (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
-
-    (decf (fp-of vm) 32)
-
+    (decf (fp-of vm) 16)
     (setf (stack-of vm)
-          (vm-cons vm (immediate-rep (+ a b)) (stack-of vm)))
-    ))
+          (vm-cons vm (immediate-rep (+ a b)) (stack-of vm)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tests
@@ -515,9 +523,8 @@ expand to: (cond ((bit-match val mask match) action) ...)"
   (combine-results
     (test-ldc-1)
     (test-ldc-2)
-    (test-ldc-3)))
-
-
+    (test-ldc-3)
+    (test-ldc-op)))
 
 ;; All test
 
