@@ -3,7 +3,7 @@
 
 ;; TODO:
 ;; 1. print-object done
-;; 2. implement LDC - code is not in VM
+;; 2. implement LDC - code is not in VM done
 ;; 3. implement LDC - code is in VM
 ;; 4. implement S, E, C, D w/o RAP
 ;; 5. implement S, E, C, D w/ RAP
@@ -90,7 +90,8 @@
 
 (defmethod print-object ((vm vm) stream)
   (print-unreadable-object (vm stream)
-    (format stream "vm: s:~a e:~a c:~a d:~a~%"
+    (format stream "S:~a ~a E:~a C:~a D:~a~%"
+            (stack-of vm)
             (with-output-to-string (out)
                 (print-scm-object vm (stack-of vm) out))
             (environment-of vm)
@@ -100,11 +101,13 @@
     (loop for i from 0 below (length (memory-of vm))
        for addr = (* i 4)
        do
-       (format stream "~a|~6,,,a|~8,,,@a| 0x~8,'0,,x~%"
+       (format stream "~a|~6,,,a|~8,,,@a| ~a 0x~8,'0,,x~%"
                (if (eq (fp-of vm) addr) "ap->" "    ")
                ;; TODO add error handler
                (scm-type-of (aref (memory-of vm) i))
                (scm-value-of (aref (memory-of vm) i))
+               (if (eq (scm-value-of (stack-of vm)) addr)
+                   "<-s" "   ")
                addr))
     (format stream "     high address~%")))
 
@@ -216,7 +219,7 @@ expand to: (cond ((bit-match val mask match) action) ...)"
            ((empty)
             nil)
            (t
-            (format *error-output* "~%other:~a~%" cdr-type)
+            ;;(format *error-output* "~%other:~a~%" cdr-type)
             (format stream " . ") ;; space dot space
             (print-scm-object vm cdr-val stream))))
        (unless in-list
@@ -264,6 +267,24 @@ expand to: (cond ((bit-match val mask match) action) ...)"
     (assert (eq type 'pair) (addr) "setf vm-cdr expect pair but got: ~a" type)
     (setf (memory-ref vm (+ val 4)) new-cdr)))
 
+;;;;;;;;;;;;;;;;
+;; stack op
+(defmethod stack-top ((vm vm))
+  (vm-car vm (stack-of vm)))
+
+(defmethod stack-pop ((vm vm))
+  (let ((top (stack-top vm)))
+    (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
+    ;;TODO fp -- ?
+    top))
+
+(defmethod stack-push ((vm vm) x)
+  (cond
+    ((= 0 (fp-of vm))
+     (setf (stack-of vm) (vm-cons vm x (immediate-rep ()))))
+    (t
+     (setf (stack-of vm) (vm-cons vm x (stack-of vm))))))
+
 ;; define Operation
 (defmacro define-operator (name (vm &rest params) &body body)
   (with-gensyms ()
@@ -272,27 +293,38 @@ expand to: (cond ((bit-match val mask match) action) ...)"
        ,vm)))
 
 ;; todo not tested
-(define-operator nil-op (vm)
-  (setf (stack-of vm)
-        (scm-value-of (vm-cons vm (immediate-rep ()) (immediate-rep ())))))
+(define-operator op-nil (vm)
+  (stack-push vm (immediate-rep ())))
 
-(define-operator ldc-op (vm x)
-  (cond
-    ((= 0 (fp-of vm))
-     (setf (stack-of vm) (vm-cons vm (immediate-rep x) (immediate-rep ()))))
-    (t
-     (setf (stack-of vm) (vm-cons vm (immediate-rep x) (stack-of vm))))))
+(define-operator op-ldc (vm x)
+  (stack-push vm (immediate-rep x)))
 
-(define-operator +-op (vm)
-  (let ((a nil)
-        (b nil))
-    (setq a (scm-value-of (vm-car vm (stack-of vm))))
-    (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
-    (setq b (scm-value-of (vm-car vm (stack-of vm))))
-    (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
-    (decf (fp-of vm) 16)
-    (setf (stack-of vm)
-          (vm-cons vm (immediate-rep (+ a b)) (stack-of vm)))))
+(defmacro define-binary-operator (name (vm a b) &body body)
+  `(define-operator ,name (,vm)
+     (let ((,a nil)
+           (,b nil))
+       (setq ,a (scm-value-of (vm-car vm (stack-of vm))))
+       (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
+       (setq ,b (scm-value-of (vm-car vm (stack-of vm))))
+       (setf (stack-of vm) (vm-cdr vm (stack-of vm)))
+       (decf (fp-of vm) 16)
+       ,@body)))
+
+(define-binary-operator op-add (vm a b)
+  (assert (numberp a) (a) "op-add expect number on stack top but got: ~a" a)
+  (assert (numberp b) (b) "op-add expect number on stack top but got: ~a" b)
+  (setf (stack-of vm) (vm-cons vm (immediate-rep (+ a b)) (stack-of vm))))
+
+(define-binary-operator op-sub (vm a b)
+  (assert (numberp a) (a) "op-sub expect number on stack top but got: ~a" a)
+  (assert (numberp b) (b) "op-sub expect number on stack top but got: ~a" b)
+  (setf (stack-of vm) (vm-cons vm (immediate-rep (- a b)) (stack-of vm))))
+
+(define-binary-operator op-mul (vm a b)
+  (assert (numberp a) (a) "op-mul expect number on stack top but got: ~a" a)
+  (assert (numberp b) (b) "op-mul expect number on stack top but got: ~a" b)
+  (setf (stack-of vm) (vm-cons vm (immediate-rep (* a b)) (stack-of vm))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tests
@@ -460,9 +492,8 @@ expand to: (cond ((bit-match val mask match) action) ...)"
   (combine-results
     (test-s-immediate)
     (test-s-cons-0)
-    (test-s-cons-1) ;; not pass TODO
+    (test-s-cons-1)
     (test-s-cons-nil)))
-
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -502,21 +533,67 @@ expand to: (cond ((bit-match val mask match) action) ...)"
         (and (eq type 'fixnum) (eq val 5)))
       (string= "(5 27 3)" (scm-object-to-string vm (stack-of vm))))))
 
-(deftest test-ldc-op ()
+(deftest test-op-ldc ()
   (with-vm (vm)
-    (ldc-op vm 2)
-    (ldc-op vm 13)
-    (+-op vm)
+    (op-ldc vm 2)
+    (op-ldc vm 13)
+    (op-add vm)
     (check
       (= 15 (scm-value-of (vm-car vm (stack-of vm)))))
-    (ldc-op vm 4)
-    (+-op vm)
+    (op-ldc vm 4)
+    (op-add vm)
     (check
       (= 19 (scm-value-of (vm-car vm (stack-of vm)))))
-    (ldc-op vm -8)
-    (+-op vm)
+    (op-ldc vm -8)
+    (op-add vm)
     (check
       (= 11 (scm-value-of (vm-car vm (stack-of vm)))))
+    vm))
+
+(deftest test-op-ldc-2 ()
+  (with-vm (vm 20)
+    (op-ldc vm 1)
+    (op-ldc vm 2)
+    (op-add vm)
+    (let ((top (stack-pop vm)))
+      (check
+        (= 3 (scm-value-of top))))
+    (op-ldc vm 3)
+    (op-ldc vm 4)
+    (op-add vm)
+    (let ((top (stack-pop vm)))
+      (check
+        (= 7 (scm-value-of top))))
+    (op-ldc vm 3)
+    (op-ldc vm 2)
+    (op-ldc vm 1)
+    (op-add vm)
+    (op-add vm)
+    (let ((top (stack-pop vm)))
+      (check
+        (= 6 (scm-value-of top))))
+    vm))
+
+
+(deftest test-op-ldc-add-sub ()
+  (with-vm (vm)
+    (op-ldc vm 3)
+    (op-ldc vm 2)
+    (op-ldc vm 8)
+    ;; 8 2 3
+    (op-add vm)
+    (op-sub vm)
+    (check
+      (= 7 (scm-value-of (stack-pop vm))))
+    vm))
+
+(deftest test-op-mul ()
+  (with-vm (vm)
+    (op-ldc vm 3)
+    (op-ldc vm 2)
+    (op-mul vm)
+    (check
+      (= 6 (scm-value-of (stack-pop vm))))
     vm))
 
 (deftest test-ldc-set ()
@@ -524,7 +601,11 @@ expand to: (cond ((bit-match val mask match) action) ...)"
     (test-ldc-1)
     (test-ldc-2)
     (test-ldc-3)
-    (test-ldc-op)))
+    (test-op-ldc)
+    (test-op-ldc-2)
+    (test-op-ldc-add-sub)
+    (test-op-mul)
+    ))
 
 ;; All test
 
