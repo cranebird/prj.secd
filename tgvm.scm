@@ -4,7 +4,6 @@
 ;; github:
 ;; $Id:$
 
-
 (define-module tgvm
   (use gauche.test)
   (use gauche.parameter)
