@@ -1,8 +1,8 @@
 ;; tgvm.scm - Toy Gauche VM by crane
+;; $Id$
 ;; Copyright (C) 2009 by cranebird
 ;; my blog: http://d.hatena.ne.jp/cranebird/ (in Japanese)
-;; github:
-;; $Id$
+
 
 (define-module tgvm
   (use gauche.test)
