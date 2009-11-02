@@ -2,7 +2,7 @@
 ;; Copyright (C) 2009 by cranebird
 ;; my blog: http://d.hatena.ne.jp/cranebird/ (in Japanese)
 ;; github:
-;; $Id:$
+;; $Id$
 
 (define-module tgvm
   (use gauche.test)
