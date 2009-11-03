@@ -1,7 +1,6 @@
 ;; tgvm.scm - Toy Gauche VM by crane
-;; Copyright (C) 2009 by cranebird
+;; Copyright (c) 2009 by cranebird
 ;; my blog: http://d.hatena.ne.jp/cranebird/ (in Japanese)
-;; $Id$
 
 (define-module tgvm
   (use gauche.test)
@@ -15,7 +14,7 @@
   )
 
 (select-module tgvm)
-(debug-print-width 1000)
+(debug-print-width 100)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; To get internal code, add below function (compile-pass1,2,3) to compile.scm in gauche
@@ -81,20 +80,20 @@
 (define (disable-opt) (opt #f)) ;; set vm-compiler-flag to disable optimize
 (define (enable-opt) (opt #t)) ;; clear vm-compiler-flag to enable optimize
 
-;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; VM
 ;; see src/gauche/vm.h, src/vm.c
 ;; see http://wiki.monaos.org/pukiwiki.php?cmd=read&page=Reading%20Gauche%2Fvm%2F%A5%EC%A5%B8%A5%B9%A5%BF&word=%A5%EC%A5%B8%A5%B9%A5%BF
 ;; vm.c: VM registers:
 ;; PC, SP, VAL0, ENV, CONT, ARGP, BASE
+(define stack-size 1000)
 
 (define (run program)
   (let1 base (vm-code program)
     (format #t "base: ~a~%" base)
-    (vm 's 'e 0 'd base ())))
+    (vm 0 (make-vector stack-size) 'e 0 'd base ())))
 
-(define (vm s e pc d base val0)
+(define (vm sp stack e pc d base val0)
   (define (identifier->proc id)
     (cond
      ((equal? id '+) +)
@@ -103,45 +102,49 @@
      ((equal? id '>) >)
      ((equal? id '<) <)
      (else (errorf "Unknown id:~a" id))))
-  ;;
+  ;; body
   (let ((c (list-tail base pc)))
-    #;(list :s s :e e :pc pc :d d :val0 val0)
     (match c
       ((('CONST) val . c)
-       (vm s e (+ pc 2) d base val))
+       (vm sp stack e (+ pc 2) d base val))
 
       ((('PUSH) . c)
-       (vm (cons val0 s) e (+ pc 1) d base val0))
+       (vector-set! stack sp val0)
+       (vm (+ sp 1) stack e (+ pc 1) d base val0))
 
       ((('GREF) var . c)
-       (vm s e (+ pc 2) d base (identifier->proc var)))
+       (vm sp stack e (+ pc 2) d base (identifier->proc var)))
 
       ((('RET) . c) ;; TODO
+       
        val0)
 
+      ;; branch
+      ((('BF) then . c)
+       (if val0
+           (vm sp stack e (+ pc 2) d base val0)
+           (vm sp stack e then d base val0)))
+
+      ;; PRE-CALL
       ((('PRE-CALL proc-id) location . c) ;; TODO
-       (vm s e (+ pc 2) d base val0))
+       (vm sp stack e (+ pc 2) d base val0))
 
       ;; CALL
       ((('CALL nargs) . c)
        (unless (procedure? val0)
          (errorf "val0 is not PROC: ~a" val0))
-       (let ((args ()))
-         (for-each (lambda (n)
-                     (set! args (cons (pop! s) args))) (iota nargs))
-         (vm s e (+ pc 1) d base (apply val0 args))))
+       (let ((args (vector->list stack (- sp nargs) sp)))
+         (vm sp stack e (+ pc 1) d base (apply val0 args))))
 
       ((('TAIL-CALL nargs) . c)
        (unless (procedure? val0)
          (errorf "val0 is not PROC: ~a" val0))
-       (let ((args ()))
-         (for-each (lambda (n)
-                     (set! args (cons (pop! s) args))) (iota nargs))
-         (vm s e (+ pc 1) d base (apply val0 args))))
+       (let ((args (vector->list stack (- sp nargs) sp)))
+         (vm sp stack e (+ pc 1) d base (apply val0 args))))
 
       ;; base condition
       (else
-       (values (list :s s :e e :pc pc :d d :val0 val0) 'stop)))))
+       (values (list :sp sp :stack stack :e e :pc pc :d d :val0 val0 :c c) 'stop)))))
 
 
 (provide "tgvm")
