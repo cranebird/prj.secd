@@ -107,11 +107,6 @@
     :accessor stack-of
     :initform nil;(make-array *vm-stack-size*)
     :documentation "stack")
-   ;; (sp
-   ;;  :accessor sp-of
-   ;;  :initform 0
-   ;;  :type integer
-   ;;  :documentation "stack pointer")
    (env
     :accessor env-of
     :initform nil
@@ -130,11 +125,6 @@
     :accessor dump-of
     :initform nil;(make-array *vm-dump-stack-size*)
     :documentation "dump stack")
-   ;; (dp
-   ;;  :accessor dp-of
-   ;;  :initform 0
-   ;;  :type integer
-   ;;  :documentation "dump stack pointer")
    )
   (:documentation "vm"))
 
@@ -186,29 +176,14 @@
      (declare (ignore ,insn))
      ,@body)))
 
-;; (defmethod stack-push ((vm vm) obj)
-;;   (setf (aref (stack-of vm) (sp-of vm)) obj)
-;;   (incf (sp-of vm)))
-
 (defmethod stack-push ((vm vm) obj)
   (push obj (stack-of vm)))
-
-;; (defmethod stack-pop ((vm vm))
-;;   (decf (sp-of vm))
-;;   (aref (stack-of vm) (sp-of vm)))
 
 (defmethod stack-pop ((vm vm))
   (pop (stack-of vm)))
 
-;; (defmethod dump-push ((vm vm) obj)
-;;   (setf (aref (dump-of vm) (dp-of vm)) obj)
-;;   (incf (dp-of vm)))
 (defmethod dump-push ((vm vm) obj)
   (push obj (dump-of vm)))
-
-;; (defmethod dump-pop ((vm vm))
-;;   (decf (dp-of vm))
-;;   (aref (dump-of vm) (dp-of vm)))
 
 (defmethod dump-pop ((vm vm))
   (pop (dump-of vm)))
@@ -253,15 +228,6 @@
 	      cf))
     (dump-push vm cont)
     (next vm)))
-
-;; (run #(:LDC t ; 0 1
-;;        :SEL 6 9 12 ; 2 3 4 5
-;;        :LDC 999 ; 6 7
-;;        :JOIN ; 8
-;;        :LDC 111 ; 9 10
-;;        :JOIN ; 11
-;;        :STOP ; 12
-;;        ))
 
 (def-insn join (vm)
   (let ((cr (dump-pop vm)))
