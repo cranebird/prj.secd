@@ -21,13 +21,17 @@
 (defun as-keyword (sym) (intern (string sym) :keyword))
 
 ;;; Compiler
-(defun compile-exp (exp)
-  (let ((program-list (compile-pass1 exp nil)))
-    (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
-	  (ht (make-hash-table)))
-      (compile-pass2 program-list vec ht)
-      (vector-push-extend :STOP vec)
-      (compile-pass3 vec ht))))
+
+;; (defun compile-pass1-cons (op rest env)
+;;   (cond
+;;     ((member op '(+ - * > <))
+;;      (dbind (a b) rest
+;;        `(,@(compile-pass1 a env) ,@(compile-pass1 b env) ,(as-keyword op))))
+;;     ((eql op 'if)
+;;      (dbind (e1 e2 e3) rest
+;;        `(,@(compile-pass1 e1 env) :SEL
+;; 	   (,@(compile-pass1 e2 env) :JOIN)
+;; 	   (,@(compile-pass1 e3 env) :JOIN))))))
 
 (defun compile-pass1 (exp env)
   (cond
@@ -35,21 +39,22 @@
      nil)
     ((numberp exp)
      `(:LDC ,exp))
+    ;;    ((consp exp)
+    ;;     (compile-pass1-cons (car exp) (cdr exp) env))
     ((consp exp)
-     (compile-pass1-cons (car exp) (cdr exp) env))
+     (destructuring-bind (op . rest) exp
+       (cond
+	 ((member op '(+ - * > <))
+	  (destructuring-bind (a b) rest
+	    `(,@(compile-pass1 a env) ,@(compile-pass1 b env)
+		,(as-keyword op))))
+	 ((eql op 'if)
+	  (destructuring-bind (e1 e2 e3) rest
+	    `(,@(compile-pass1 e1 env) :SEL
+		(,@(compile-pass1 e2 env) :JOIN)
+		(,@(compile-pass1 e3 env) :JOIN)))))))
     (t
      (error "unknown:~a" exp))))
-
-(defun compile-pass1-cons (op rest env)
-  (cond
-    ((member op '(+ - * > <))
-     (destructuring-bind (a b) rest
-       `(,@(compile-pass1 a env) ,@(compile-pass1 b env) ,(as-keyword op))))
-    ((eql op 'if)
-     (destructuring-bind (e1 e2 e3) rest
-       `(,@(compile-pass1 e1 env) :SEL
-	   (,@(compile-pass1 e2 env) :JOIN)
-	   (,@(compile-pass1 e3 env) :JOIN))))))
 
 (defun compile-pass2 (program vec label-table)
   (cond
@@ -65,8 +70,7 @@
      (compile-pass2 (cdr program) vec label-table))
     ((eql (car program) :SEL)
      (destructuring-bind (op ct cf . rest) program
-       (let ((start (fill-pointer vec))
-	     (ct-start (gensym))
+       (let ((ct-start (gensym))
 	     (cf-start (gensym))
 	     (rest-start (gensym)))
 	 (setf (gethash ct-start label-table) nil)
@@ -99,6 +103,14 @@
 		      (if index
 			  index
 			  x)))))
+
+(defun compile-exp (exp)
+  (let ((program-list (compile-pass1 exp nil)))
+    (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
+	  (ht (make-hash-table)))
+      (compile-pass2 program-list vec ht)
+      (vector-push-extend :STOP vec)
+      (compile-pass3 vec ht))))
 
 ;;; Class
 
@@ -201,20 +213,21 @@
     (incr-pc vm)
     (next vm)))
 
-(defmacro def-binary-insn (name sym (vm) &rest body)
+(defmacro def-binary-insn (name sym)
   (let ((a (gensym))
-	(b (gensym)))
+	(b (gensym))
+	(vm (gensym)))
   `(def-insn ,name (,vm)
      (let* ((,b (stack-pop ,vm))
 	    (,a (stack-pop ,vm)))
        (stack-push ,vm (,sym ,a ,b))
        (next ,vm)))))
 
-(def-binary-insn + cl:+ (vm))
-(def-binary-insn - cl:- (vm))
-(def-binary-insn * cl:* (vm))
-(def-binary-insn > cl:> (vm))
-(def-binary-insn < cl:< (vm))
+(def-binary-insn + cl:+)
+(def-binary-insn - cl:-)
+(def-binary-insn * cl:*)
+(def-binary-insn > cl:>)
+(def-binary-insn < cl:<)
 
 ;; SEL CT CF CONT
 (def-insn sel (vm)
