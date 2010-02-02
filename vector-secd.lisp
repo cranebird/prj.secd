@@ -19,28 +19,65 @@
 ;;; Utility
 ;; from "Practical Common Lisp"
 (defun as-keyword (sym) (intern (string sym) :keyword))
+;;; Testing Framework
+
+(defvar *test-name* nil)
+
+(defmacro deftest (name parameters &body body)
+  "Define a test function. Within a test function we can call
+other test functions or use 'check' to run individual test cases."
+  `(defun ,name ,parameters 
+     (let ((*test-name* (append *test-name* (list ',name))))
+       ,@body)))
+
+(defmacro check (&body forms)
+  "Run each expression in 'forms' as a test case."
+  `(combine-results
+    ,@(loop for f in forms collect `(report-result ,f ',f))))
+
+(defmacro combine-results (&body forms)
+  "Combine the results (as booleans) of evaluating 'forms' in order."
+  (let ((result (gensym)))
+    `(let ((,result t))
+       ,@(loop for f in forms collect `(unless ,f (setf ,result nil)))
+       ,result)))
+
+(defun report-result (result form)
+  "Report the results of a single test case. Called by 'check'."
+  (format t "~:[FAIL~;pass~] ... ~a: ~a~%" result *test-name* form)
+  result)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; lookup the variable VAR in the environment ENV
+;; env example:
+;; ( ((c . 1) (d . 2) (e . 3)) )
+;; ( ((a . 1) (b . 2)) ((c . 1) (d . 2) (e . 3)))
+;; (lookup 'a ( ((a . 1) (b . 2)))) => (1 . 1) =(level 1, 1st)
+;; (lookup 'b ( ((a . 1) (b . 2)))) => (1 . 2) =(level 1, 2nd)
+;; (lookup 'c '(((a . 1) (b . 2)) ((c . 1) (b . 2)))) => (2 .1) = (level2, 1st)
+(defun lookup (var env)
+  (loop for e in env for level from 1
+     if (assoc var e)
+       return (cons level (cdr (assoc var e)))
+     finally
+       (error "fail to lookup ~a in ~a" var env)))
+
+(defun extend-env (plist env)
+  (append
+   (list (loop for idx from 1 for var in plist
+	    collect (cons var idx))) env))
+
+(defun locate (i j env)
+  (nth (- j 1) (nth (- i 1) env)))
 
 ;;; Compiler
-
-;; (defun compile-pass1-cons (op rest env)
-;;   (cond
-;;     ((member op '(+ - * > <))
-;;      (dbind (a b) rest
-;;        `(,@(compile-pass1 a env) ,@(compile-pass1 b env) ,(as-keyword op))))
-;;     ((eql op 'if)
-;;      (dbind (e1 e2 e3) rest
-;;        `(,@(compile-pass1 e1 env) :SEL
-;; 	   (,@(compile-pass1 e2 env) :JOIN)
-;; 	   (,@(compile-pass1 e3 env) :JOIN))))))
-
 (defun compile-pass1 (exp env)
   (cond
     ((null exp)
      nil)
     ((numberp exp)
      `(:LDC ,exp))
-    ;;    ((consp exp)
-    ;;     (compile-pass1-cons (car exp) (cdr exp) env))
     ((consp exp)
      (destructuring-bind (op . rest) exp
        (cond
@@ -105,6 +142,7 @@
 			  x)))))
 
 (defun compile-exp (exp)
+  "compile expression"
   (let ((program-list (compile-pass1 exp nil)))
     (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
 	  (ht (make-hash-table)))
@@ -113,11 +151,10 @@
       (compile-pass3 vec ht))))
 
 ;;; Class
-
 (defclass vm ()
   ((stack
     :accessor stack-of
-    :initform nil;(make-array *vm-stack-size*)
+    :initform nil
     :documentation "stack")
    (env
     :accessor env-of
@@ -126,7 +163,6 @@
    (pc
     :accessor pc-of
     :initform 0
-    :initarg :pc
     :type integer
     :documentation "Program Pointer")
    (code
@@ -135,7 +171,7 @@
     :documentation "code vector")
    (dump
     :accessor dump-of
-    :initform nil;(make-array *vm-dump-stack-size*)
+    :initform nil
     :documentation "dump stack")
    )
   (:documentation "vm"))
@@ -175,9 +211,10 @@
 	(dispatch c vm)
 	(format t ";; end of code? ~a~%" vm))))
 
-(defun run (code)
+(defun run (code &key (env nil))
   (let ((vm (make-vm)))
     (setf (code-of vm) code)
+    (setf (env-of vm) env)
     (format t ";; code: ~a~%" (code-of vm))
     (next vm)
     vm))
@@ -188,17 +225,13 @@
      (declare (ignore ,insn))
      ,@body)))
 
-(defmethod stack-push ((vm vm) obj)
-  (push obj (stack-of vm)))
+(defmethod stack-push ((vm vm) obj) (push obj (stack-of vm)))
 
-(defmethod stack-pop ((vm vm))
-  (pop (stack-of vm)))
+(defmethod stack-pop ((vm vm)) (pop (stack-of vm)))
 
-(defmethod dump-push ((vm vm) obj)
-  (push obj (dump-of vm)))
+(defmethod dump-push ((vm vm) obj) (push obj (dump-of vm)))
 
-(defmethod dump-pop ((vm vm))
-  (pop (dump-of vm)))
+(defmethod dump-pop ((vm vm)) (pop (dump-of vm)))
 
 (def-insn nil (vm)
   (stack-push vm :nil)
@@ -247,4 +280,69 @@
     (setf (pc-of vm) cr)
     (next vm)))
 
+;; LD
+(def-insn ld (vm)
+  (let ((level (aref (code-of vm) (pc-of vm)))
+	(j (aref (code-of vm) (1+ (pc-of vm)))))
+    (stack-push vm (locate level j (env-of vm)))
+    (setf (pc-of vm) (+ 2 (pc-of vm)))
+    (next vm)))
 
+;; lambda
+;; LDF function-start cont
+(def-insn ldf (vm)
+  (let ((f (aref (code-of vm) (pc-of vm)))
+	(cont (aref (code-of vm) (1+ (pc-of vm)))))
+    (stack-push vm (cons f (env-of vm)))
+    (setf (pc-of vm) cont)
+    (next vm)))
+
+(def-insn ap (vm)
+  ;; TODO
+  )
+
+;; TODO
+;; (run #(:LDF 3 8 :LDC 3 :LDC 4 :+ :STOP))
+(def-insn rtn (vm)
+  (destructuring-bind (s e c . d) (dump-of vm)
+    (let ((x (stack-pop vm)))
+      (setf (stack-of vm) s)
+      (stack-push vm x)
+      (setf (dump-of vm) d)
+      (setf (pc-of vm) c)
+      (next vm)))
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(deftest test-lookup ()
+  (check
+    (equal '(1 . 1) (lookup 'a '(((a . 1) (b . 2)))))
+    (equal '(1 . 2) (lookup 'b '(((a . 1) (b . 2)))))
+    (equal '(1 . 2) (lookup 'b '(((a . 1) (b . 2)) ((c . 1) (d . 2)))))
+    (equal '(2 . 1) (lookup 'c '(((a . 1) (b . 2)) ((c . 1) (d . 2)))))
+    (equal '(1 . 1) (lookup 'a '(((a . 1) (b . 2)) ((a . 1) (b . 2)))))
+    (equal '(3 . 1) (lookup 'd '(((a . 1) (b . 2)) ((a . 1) (b . 2)) ((d . 1)))))
+    ))
+
+(deftest test-extend-env ()
+  (let ((e (extend-env '(a b c) nil)))
+    (check
+      (equal '(1 . 1) (lookup 'a e))
+      (equal '(1 . 2) (lookup 'b e))
+      (equal '(1 . 3) (lookup 'c e)))
+    (let ((e2 (extend-env '(d) e)))
+      (check
+	(equal '(2 . 1) (lookup 'a e2))
+	(equal '(2 . 2) (lookup 'b e2))
+	(equal '(2 . 3) (lookup 'c e2))
+	(equal '(1 . 1) (lookup 'd e2)))
+      (let ((e3 (extend-env '(e f g h) e2)))
+	(check
+	  (equal '(3 . 1) (lookup 'a e3))
+	  (equal '(3 . 2) (lookup 'b e3))
+	  (equal '(3 . 3) (lookup 'c e3))
+	  (equal '(2 . 1) (lookup 'd e3))
+	  (equal '(1 . 1) (lookup 'e e3))
+	  (equal '(1 . 4) (lookup 'h e3)))))))
+
+(test-lookup)
