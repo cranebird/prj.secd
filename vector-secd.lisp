@@ -19,6 +19,7 @@
 ;;; Utility
 ;; from "Practical Common Lisp"
 (defun as-keyword (sym) (intern (string sym) :keyword))
+
 ;;; Testing Framework
 
 (defvar *test-name* nil)
@@ -74,12 +75,9 @@ other test functions or use 'check' to run individual test cases."
 ;;; Compiler
 (defun compile-pass1 (exp env)
   (cond
-    ((null exp)
-     nil)
-    ((numberp exp)
-     `(:LDC ,exp))
-    ((symbolp exp)
-     `(:LD ,(lookup exp env)))
+    ((null exp) nil)
+    ((numberp exp) `(:LDC ,exp))
+    ((symbolp exp) `(:LD ,(lookup exp env)))
     ((consp exp)
      (destructuring-bind (op . rest) exp
        (cond
@@ -99,7 +97,6 @@ other test functions or use 'check' to run individual test cases."
 	 ((eql op 'lambda)
 	  (destructuring-bind (plist body) rest
 	    `(:LDF ,(append (compile-pass1 body (extend-env plist env)) '(:RTN)))))
-	 ;; apply
 	 (t ;; (e ek ...)
 	  `(:NIL
 	    ,@(loop for en in (reverse rest)
@@ -112,10 +109,11 @@ other test functions or use 'check' to run individual test cases."
 (defun compile-pass2 (program vec label-table)
   "compile program into vector."
   (if (null program)
-      ;(values vec label-table)
+      ;; resolve label
       (loop :for i :from 0 below (length vec)
 	 :for x = (aref vec i)
 	 :do (setf (aref vec i) (or (gethash x label-table) x)))
+      ;;
       (ecase (car program)
 	(:NIL
 	 (vector-push-extend :NIL vec)
@@ -179,12 +177,6 @@ other test functions or use 'check' to run individual test cases."
 	(t
 	 (format t "compile-pass2 unknown: program ~a, vec: ~a~%" program vec)))))
 
-;; (defun compile-pass3 (vec label-table)
-;;   "solve label"
-;;   (loop :for i :from 0 below (length vec)
-;;      :for x = (aref vec i)
-;;      :do (setf (aref vec i) (or (gethash x label-table) x))))
-
 (defun compile-exp (exp)
   "compile expression"
   ;;(format t ";; exp: ~a~%" exp)
@@ -247,6 +239,9 @@ other test functions or use 'check' to run individual test cases."
   "increment PC."
   (incf (pc-of vm)))
 
+(defmethod code-ref ((vm vm) idx)
+  (aref (code-of vm) idx))
+
 (defmethod fetch-insn ((vm vm))
   "fetch instruction."
   (let ((c (aref (code-of vm) (pc-of vm))))
@@ -262,23 +257,6 @@ other test functions or use 'check' to run individual test cases."
     (if c
 	(dispatch c vm)
 	(format t ";; end of code? ~a~%" vm))))
-
-(defun run-code (code &key (env nil))
-  (let ((vm (make-vm)))
-    (setf (code-of vm) code)
-    (setf (env-of vm) env)
-    (next vm)
-    vm))
-
-(defun run (exp)
-  (let ((code (compile-exp exp)))
-    (run-code code)))
-
-(defmacro def-insn (name (vm) &rest body)
-  (let ((insn (gensym)))
-  `(defmethod dispatch ((,insn (eql ,(as-keyword name))) (,vm vm))
-     (declare (ignore ,insn))
-     ,@body)))
 
 (defmethod stack-push ((vm vm) obj)
   ;(push obj (stack-of vm))
@@ -302,6 +280,29 @@ other test functions or use 'check' to run individual test cases."
   (let ((obj (car (dump-of vm))))
     (setf (dump-of vm) (cdr (dump-of vm)))
     obj))
+
+(defun run-code (code &key (env nil))
+  "run compiled-code"
+  (let ((vm (make-vm)))
+    (setf (code-of vm) code)
+    (setf (env-of vm) env)
+    (next vm)
+    vm))
+
+(defun run (exp)
+  "compile s-expression and run"
+  (let ((code (compile-exp exp)))
+    (run-code code)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; instructions
+
+(defmacro def-insn (name (vm) &rest body)
+  "define instuction."
+  (let ((insn (gensym)))
+    `(defmethod dispatch ((,insn (eql ,(as-keyword name))) (,vm vm))
+       (declare (ignore ,insn))
+       ,@body)))
 
 (def-insn nil (vm)
   (stack-push vm :nil)
@@ -339,10 +340,7 @@ other test functions or use 'check' to run individual test cases."
 	(ct (aref (code-of vm) (pc-of vm)))
 	(cf (aref (code-of vm) (1+ (pc-of vm))))
 	(cont (aref (code-of vm) (+ 2 (pc-of vm)))))
-    (setf (pc-of vm)
-	  (if x
-	      ct
-	      cf))
+    (setf (pc-of vm) (if x ct cf))
     (dump-push vm cont)
     (next vm)))
 
@@ -358,10 +356,6 @@ other test functions or use 'check' to run individual test cases."
     (stack-push vm (locate level j (env-of vm)))
     (setf (pc-of vm) (+ 2 (pc-of vm)))
     (next vm)))
-
-;; lambda
-;; LDF function-start cont
-;; LDF
 
 (def-insn ldf (vm)
   (let ((fbody-pc (fetch-operand vm))
@@ -379,10 +373,9 @@ other test functions or use 'check' to run individual test cases."
       (setf (pc-of vm) fbody-pc)
       (next vm))))
 
-;; TODO
-;; (run #(:LDF 3 8 :LDC 3 :LDC 4 :+ :STOP))
 (def-insn rtn (vm)
   (destructuring-bind (s e c . d) (dump-of vm)
+    (declare (ignore e))
     (let ((x (stack-pop vm)))
       (setf (stack-of vm) s)
       (stack-push vm x)
@@ -434,24 +427,23 @@ other test functions or use 'check' to run individual test cases."
       (cmp '(:LDF (:LD (1 . 1) :RTN)) '(lambda (x) x))
       (cmp '(:NIL :LDF (:LD (1 . 1) :RTN) :AP) '((lambda (x) x)))
       (cmp '(:NIL :LDF (:LD (1 . 2) :RTN) :AP) '((lambda (x y) y)))
-      (cmp '(:NIL :LDF (:LD (1 . 2) :LD (1 . 1) :+ :RTN) :AP) '((lambda (x y) (+ x y))))
-      )))
+      (cmp '(:NIL :LDF (:LD (1 . 2) :LD (1 . 1) :+ :RTN) :AP) '((lambda (x y) (+ x y)))))))
 ;; TODO test with env.
 
-(defun pass2-pass3 (program)
+(defun pass2 (program)
   (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
 	(ht (make-hash-table)))
     (compile-pass2 program vec ht)
     vec))
 
 (deftest test-pass2 ()
-  (labels ((pass2-3 (program)
+  (labels ((pass2 (program)
 	     (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
 		   (ht (make-hash-table)))
 	       (compile-pass2 program vec ht)
 	       vec))
 	   (cmp (expect program) ;; NO EXP
-	     (equalp expect (pass2-3 program))))
+	     (equalp expect (pass2 program))))
     (check
       (cmp #(:LDC 1) '(:LDC 1))
       (cmp #(:LDC 7 :LDC 13 :+) '(:LDC 7 :LDC 13 :+))
@@ -462,9 +454,7 @@ other test functions or use 'check' to run individual test cases."
       (cmp #(:LDF 3 7 :LD 1 1 :RTN) '(:LDF (:LD (1 . 1) :RTN)))
       (cmp #(:NIL :LDF 4 8 :LD 1 1 :RTN :AP) '(:NIL :LDF (:LD (1 . 1) :RTN) :AP))
       (cmp #(:NIL :LDF 4 8 :LD 1 2 :RTN :AP) '(:NIL :LDF (:LD (1 . 2) :RTN) :AP))
-      (cmp #(:NIL :LDF 4 12 :LD 1 2 :LD 1 1 :+ :RTN :AP) '(:NIL :LDF (:LD (1 . 2) :LD (1 . 1) :+ :RTN) :AP))
-      ))
-  )
+      (cmp #(:NIL :LDF 4 12 :LD 1 2 :LD 1 1 :+ :RTN :AP) '(:NIL :LDF (:LD (1 . 2) :LD (1 . 1) :+ :RTN) :AP)))))
 
 (deftest test-run ()
   (labels ((cmp (expect exp)
@@ -475,10 +465,7 @@ other test functions or use 'check' to run individual test cases."
       (cmp 11 '(+ (+ 4 5) 2))
       (cmp 2 '(- 3 1))
       (cmp -1 '((lambda (x y) (- x y)) 2 3))
-      (cmp 4 '((lambda (z) ((lambda (x y) (+ (- x y) z)) 3 5)) 6))
-      )
-    )
-  )
+      (cmp 4 '((lambda (z) ((lambda (x y) (+ (- x y) z)) 3 5)) 6)))))
 
 (test-lookup)
 
