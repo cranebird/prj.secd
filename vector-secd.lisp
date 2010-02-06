@@ -83,15 +83,27 @@ other test functions or use 'check' to run individual test cases."
        (cond
 	 ((member op '(+ - * > <))
 	  (destructuring-bind (a b) rest
-	    `(,@(compile-pass1 a env) ,@(compile-pass1 b env)
+	    `(,@(compile-pass1 b env) ,@(compile-pass1 a env)
+		,(as-keyword op))))
+	 ((member op '(cons))
+	  (destructuring-bind (a b) rest
+	    `(,@(compile-pass1 b env) ,@(compile-pass1 a env)
 		,(as-keyword op))))
 	 ((eql op 'if)
 	  (destructuring-bind (e1 e2 e3) rest
 	    `(,@(compile-pass1 e1 env) :SEL
 		(,@(compile-pass1 e2 env) :JOIN)
-		(,@(compile-pass1 e3 env) :JOIN)))))))
+		(,@(compile-pass1 e3 env) :JOIN))))
+	 ((eql op 'lambda)
+	  (destructuring-bind (plist body) rest
+	    `(:LDF ,(append (compile-pass1 body (extend-env plist env)) '(:RTN)))))
+	 ;; apply
+	 (t
+	  ;; AP
+	  )
+	 )))
     (t
-     (error "unknown:~a" exp))))
+     (error "compile-pass1 unknown: ~a" exp))))
 
 (defun compile-pass2 (program vec label-table)
   (cond
@@ -105,12 +117,11 @@ other test functions or use 'check' to run individual test cases."
     ((eql (car program) :JOIN)
      (vector-push-extend (car program) vec)
      (compile-pass2 (cdr program) vec label-table))
-    ((eql (car program) :SEL)
+    ((eql (car program) :SEL) ;; (SEL ct cf . c) => #(SEL PC-CT PC-CF PC-CONT CT CF CONT)
      (destructuring-bind (op ct cf . rest) program
        (let ((ct-start (gensym))
 	     (cf-start (gensym))
 	     (rest-start (gensym)))
-	 (setf (gethash ct-start label-table) nil)
 	 (vector-push-extend op vec)
 	 (vector-push-extend ct-start vec)
 	 (vector-push-extend cf-start vec)
@@ -124,12 +135,30 @@ other test functions or use 'check' to run individual test cases."
 	 (setf (gethash rest-start label-table) (fill-pointer vec))
 	 ;; rest 
 	 (compile-pass2 rest vec label-table))))
+    ((eql (car program) :LDF) ;; (:LDF body) => #(:LDF PC-body cont fbody)
+     (destructuring-bind (op fbody . rest) program
+       (let ((cont-start (gensym)))
+	 (vector-push-extend op vec)
+	 (vector-push-extend (+ 2 (fill-pointer vec)) vec) ;; fbody pos = :LDC pos + 2
+	 (vector-push-extend cont-start vec)
+	 (compile-pass2 fbody vec label-table)
+	 (setf (gethash cont-start label-table) (fill-pointer vec))
+	 (compile-pass2 rest vec label-table)
+       )))
+    ((eql (car program) :RTN)
+     (destructuring-bind (op . rest) program
+       (vector-push-extend op vec)
+       (compile-pass2 rest vec label-table)))
     ((member (car program) '(:+ :- :* :> :<))
      (destructuring-bind (op . rest) program
        (vector-push-extend op vec)
        (compile-pass2 rest vec label-table)))
+    ((eql (car program) '(:CONS))
+     (destructuring-bind (op . rest) program
+       (vector-push-extend op vec)
+       (compile-pass2 rest vec label-table)))
     (t
-     (format t "unknown: program ~a, vec: ~a~%" program vec))))
+     (format t "compile-pass2 unknown: program ~a, vec: ~a~%" program vec))))
 
 (defun compile-pass3 (vec label-table)
   "solve label"
@@ -143,12 +172,21 @@ other test functions or use 'check' to run individual test cases."
 
 (defun compile-exp (exp)
   "compile expression"
+  (format t ";; exp: ~a~%" exp)
   (let ((program-list (compile-pass1 exp nil)))
+    (format t ";; program-list: ~a~%" program-list)
     (let ((vec (make-array 0 :adjustable t :fill-pointer 0))
 	  (ht (make-hash-table)))
       (compile-pass2 program-list vec ht)
+      (format t ";; pass-2: ~a~%" vec)
       (vector-push-extend :STOP vec)
-      (compile-pass3 vec ht))))
+      (maphash #'(lambda (key val)
+		   (format t ";key:~a val:~a~%" key val)) ht)
+      (setf vec (compile-pass3 vec ht))
+      (format t ";; pass-3: ~a~%" vec )
+      (maphash #'(lambda (key val)
+		   (format t ";key:~a val:~a~%" key val)) ht)
+      vec)))
 
 ;;; Class
 (defclass vm ()
@@ -215,7 +253,6 @@ other test functions or use 'check' to run individual test cases."
   (let ((vm (make-vm)))
     (setf (code-of vm) code)
     (setf (env-of vm) env)
-    (format t ";; code: ~a~%" (code-of vm))
     (next vm)
     vm))
 
@@ -225,13 +262,28 @@ other test functions or use 'check' to run individual test cases."
      (declare (ignore ,insn))
      ,@body)))
 
-(defmethod stack-push ((vm vm) obj) (push obj (stack-of vm)))
+(defmethod stack-push ((vm vm) obj)
+  ;(push obj (stack-of vm))
+  (setf (stack-of vm) (cons obj (stack-of vm)))
+  )
 
-(defmethod stack-pop ((vm vm)) (pop (stack-of vm)))
+(defmethod stack-pop ((vm vm))
+  ;(pop (stack-of vm))
+  (let ((obj (car (stack-of vm))))
+    (setf (stack-of vm) (cdr (stack-of vm)))
+    obj))
 
-(defmethod dump-push ((vm vm) obj) (push obj (dump-of vm)))
+(defmethod dump-push ((vm vm) obj)
+  ;(push obj (dump-of vm))
+  (setf (dump-of vm) (cons obj (dump-of vm)))
+  )
 
-(defmethod dump-pop ((vm vm)) (pop (dump-of vm)))
+(defmethod dump-pop ((vm vm))
+  ;(pop (dump-of vm))
+  (let ((obj (car (dump-of vm))))
+    (setf (dump-of vm) (cdr (dump-of vm)))
+    obj)
+    )
 
 (def-insn nil (vm)
   (stack-push vm :nil)
@@ -251,8 +303,8 @@ other test functions or use 'check' to run individual test cases."
 	(b (gensym))
 	(vm (gensym)))
   `(def-insn ,name (,vm)
-     (let* ((,b (stack-pop ,vm))
-	    (,a (stack-pop ,vm)))
+     (let* ((,a (stack-pop ,vm))
+	    (,b (stack-pop ,vm)))
        (stack-push ,vm (,sym ,a ,b))
        (next ,vm)))))
 
@@ -261,6 +313,7 @@ other test functions or use 'check' to run individual test cases."
 (def-binary-insn * cl:*)
 (def-binary-insn > cl:>)
 (def-binary-insn < cl:<)
+(def-binary-insn :cons cl:cons)
 
 ;; SEL CT CF CONT
 (def-insn sel (vm)
@@ -290,16 +343,26 @@ other test functions or use 'check' to run individual test cases."
 
 ;; lambda
 ;; LDF function-start cont
+;; LDF
+
 (def-insn ldf (vm)
-  (let ((f (aref (code-of vm) (pc-of vm)))
-	(cont (aref (code-of vm) (1+ (pc-of vm)))))
-    (stack-push vm (cons f (env-of vm)))
+  (let ((fbody-pc (fetch-operand vm))
+	(cont (aref (code-of vm) (+ 1 (pc-of vm))))
+	)
+    (stack-push vm (cons fbody-pc (env-of vm)))
     (setf (pc-of vm) cont)
     (next vm)))
+    
 
 (def-insn ap (vm)
-  ;; TODO
-  )
+  (destructuring-bind ((fbody-pc . fenv) v . s) (stack-of vm)
+    (let ((e (env-of vm)))
+      (setf (stack-of vm) :NIL)
+      (setf (dump-of vm) (list s e (pc-of vm) (dump-of vm)))
+      (setf (env-of vm) (cons v fenv))
+      (setf (pc-of vm) fbody-pc)
+      (next vm)
+      )))
 
 ;; TODO
 ;; (run #(:LDF 3 8 :LDC 3 :LDC 4 :+ :STOP))
@@ -310,8 +373,7 @@ other test functions or use 'check' to run individual test cases."
       (stack-push vm x)
       (setf (dump-of vm) d)
       (setf (pc-of vm) c)
-      (next vm)))
-  )
+      (next vm))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (deftest test-lookup ()
@@ -321,8 +383,7 @@ other test functions or use 'check' to run individual test cases."
     (equal '(1 . 2) (lookup 'b '(((a . 1) (b . 2)) ((c . 1) (d . 2)))))
     (equal '(2 . 1) (lookup 'c '(((a . 1) (b . 2)) ((c . 1) (d . 2)))))
     (equal '(1 . 1) (lookup 'a '(((a . 1) (b . 2)) ((a . 1) (b . 2)))))
-    (equal '(3 . 1) (lookup 'd '(((a . 1) (b . 2)) ((a . 1) (b . 2)) ((d . 1)))))
-    ))
+    (equal '(3 . 1) (lookup 'd '(((a . 1) (b . 2)) ((a . 1) (b . 2)) ((d . 1)))))))
 
 (deftest test-extend-env ()
   (let ((e (extend-env '(a b c) nil)))
@@ -345,4 +406,8 @@ other test functions or use 'check' to run individual test cases."
 	  (equal '(1 . 1) (lookup 'e e3))
 	  (equal '(1 . 4) (lookup 'h e3)))))))
 
+;;ok 20100203
+;; (run #(:NIL :LDC 3 :CONS :LDC 2 :CONS :LDF 10 18 :LD 1 2 :LD 1 1 :+ :RTN :AP :STOP))
+;; => #<SECD VM S: (5) E: ((2 3 . NIL)) C: #(NIL LDC 3 CONS LDC 2 CONS LDF 10 18 LD 1
+;;                                     2 LD 1 1 + RTN AP STOP) D:(NIL)>
 (test-lookup)
