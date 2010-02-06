@@ -244,13 +244,13 @@ other test functions or use 'check' to run individual test cases."
 
 (defmethod fetch-insn ((vm vm))
   "fetch instruction."
-  (let ((c (aref (code-of vm) (pc-of vm))))
+  (let ((c (code-ref vm (pc-of vm))))
     (incr-pc vm)
     c))
 
 (defmethod fetch-operand ((vm vm))
   "fetch operand."
-  (aref (code-of vm) (pc-of vm)))
+  (code-ref vm (pc-of vm)))
 
 (defmethod next ((vm vm))
   (let ((c (fetch-insn vm)))
@@ -337,9 +337,9 @@ other test functions or use 'check' to run individual test cases."
 ;; SEL CT CF CONT
 (def-insn sel (vm)
   (let ((x (stack-pop vm))
-	(ct (aref (code-of vm) (pc-of vm)))
-	(cf (aref (code-of vm) (1+ (pc-of vm))))
-	(cont (aref (code-of vm) (+ 2 (pc-of vm)))))
+	(ct (code-ref vm (pc-of vm)))
+	(cf (code-ref vm (1+ (pc-of vm))))
+	(cont (code-ref vm (+ 2 (pc-of vm)))))
     (setf (pc-of vm) (if x ct cf))
     (dump-push vm cont)
     (next vm)))
@@ -351,15 +351,15 @@ other test functions or use 'check' to run individual test cases."
 
 ;; LD
 (def-insn ld (vm)
-  (let ((level (aref (code-of vm) (pc-of vm)))
-	(j (aref (code-of vm) (1+ (pc-of vm)))))
+  (let ((level (code-ref vm (pc-of vm)))
+	(j (code-ref vm (1+ (pc-of vm)))))
     (stack-push vm (locate level j (env-of vm)))
     (setf (pc-of vm) (+ 2 (pc-of vm)))
     (next vm)))
 
 (def-insn ldf (vm)
   (let ((fbody-pc (fetch-operand vm))
-	(cont (aref (code-of vm) (+ 1 (pc-of vm)))))
+	(cont (code-ref vm (+ 1 (pc-of vm)))))
     (stack-push vm (cons fbody-pc (env-of vm)))
     (setf (pc-of vm) cont)
     (next vm)))
