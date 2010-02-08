@@ -97,6 +97,14 @@ other test functions or use 'check' to run individual test cases."
 	 ((eql op 'lambda)
 	  (destructuring-bind (plist body) rest
 	    `(:LDF ,(append (compile-pass1 body (extend-env plist env)) '(:RTN)))))
+	 ;; let into lambda
+	 ;; (let ((x 3)) body) ==  ((lambda (x) body) 3)
+	 ((eql op 'let)
+	  (destructuring-bind (bindings . body) rest
+	    (let ((vars (mapcar #'car bindings))
+		  (inits (mapcar #'cadr bindings)))
+	      (compile-pass1
+	       `((lambda ,vars ,@body) ,@inits) env))))
 	 (t ;; (e ek ...)
 	  `(:NIL
 	    ,@(loop for en in (reverse rest)
@@ -198,11 +206,12 @@ other test functions or use 'check' to run individual test cases."
 (defclass vm ()
   ((stack
     :accessor stack-of
-    :initform nil
+    :initform 's
     :documentation "stack")
    (env
     :accessor env-of
-    :initform nil
+    :initform 'e
+    :initarg :env
     :documentation "env pointer")
    (pc
     :accessor pc-of
@@ -215,8 +224,12 @@ other test functions or use 'check' to run individual test cases."
     :documentation "code vector")
    (dump
     :accessor dump-of
-    :initform nil
+    :initform 'd
     :documentation "dump stack")
+   (profile
+    :accessor profile-of
+    :initform (make-hash-table)
+    :documentation "instruction => executed count hash-table")
    )
   (:documentation "vm"))
 
@@ -226,7 +239,7 @@ other test functions or use 'check' to run individual test cases."
 
 (defmethod print-object ((vm vm) stream)
   (print-unreadable-object (vm stream)
-    (format stream "SECD VM S: ~a E: ~a C: ~a D:~a~%"
+    (format stream "VM S: ~a E: ~a C: ~a D:~a"
 	    (stack-of vm)
 	    (env-of vm)
 	    (code-of vm)
@@ -241,6 +254,11 @@ other test functions or use 'check' to run individual test cases."
 
 (defmethod code-ref ((vm vm) idx)
   (aref (code-of vm) idx))
+
+(defmethod code-ref-safe ((vm vm) idx)
+  (if (< idx (length (code-of vm)))
+      (aref (code-of vm) idx)
+      nil))
 
 (defmethod fetch-insn ((vm vm))
   "fetch instruction."
@@ -281,7 +299,19 @@ other test functions or use 'check' to run individual test cases."
     (setf (dump-of vm) (cdr (dump-of vm)))
     obj))
 
-(defun run-code (code &key (env nil))
+(defmethod describe-object :after ((vm vm) stream)
+  (format stream "~%")
+  (format stream "スタックトップは~a" (stack-top vm))
+  (format stream "コードの長さは ~a、" (length (code-of vm)))
+  (format stream "PC は ~a~%" (pc-of vm))
+  (if (>= (pc-of vm) (length (code-of vm)))
+      (format stream "PC はコードの範囲外~%")
+      (format stream "コードは ~a~%" (code-ref vm (pc-of vm))))
+  (format stream "プロファイル:~%")
+  (maphash (lambda (key val)
+	     (format stream "~a: ~a~%" key val)) (profile-of vm)))
+
+(defun run-code (code &key (env 'e))
   "run compiled-code"
   (let ((vm (make-vm)))
     (setf (code-of vm) code)
@@ -292,50 +322,79 @@ other test functions or use 'check' to run individual test cases."
 (defun run (exp)
   "compile s-expression and run"
   (let ((code (compile-exp exp)))
+    ;(describe code)
     (run-code code)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; instructions
 
-(defmacro def-insn (name (vm) &rest body)
+(defparameter *debug* nil)
+
+(defmacro def-insn (name (vm) doc &rest body)
   "define instuction."
   (let ((insn (gensym)))
     `(defmethod dispatch ((,insn (eql ,(as-keyword name))) (,vm vm))
-       (declare (ignore ,insn))
+       ,doc
+       ,(if *debug*
+	    `(format t "; S: ~a E: ~a C: ~a D: ~a~%"
+		       (stack-of ,vm)
+		       (env-of ,vm)
+		       ,insn
+		       ;(code-ref-safe ,vm (pc-of ,vm))
+		       (dump-of ,vm))
+	    `(declare (ignore ,insn)))
+       (multiple-value-bind (val found) (gethash ,(as-keyword name) (profile-of ,vm))
+	 (declare (ignore val))
+	 (if found
+	     (incf (gethash ,(as-keyword name) (profile-of ,vm)))
+	     (setf (gethash ,(as-keyword name) (profile-of ,vm)) 1)))
        ,@body)))
 
 (def-insn nil (vm)
+  "Nil Instruction."
   (stack-push vm :nil)
   (next vm))
 
 (def-insn stop (vm)
+  "STOP."
   vm)
 
 (def-insn ldc (vm)
+  "LoaD Constant."
   (let ((c (fetch-operand vm)))
     (stack-push vm c)
     (incr-pc vm)
     (next vm)))
 
-(defmacro def-binary-insn (name sym)
+(defmacro def-binary-insn (name sym doc)
   (let ((a (gensym))
 	(b (gensym))
 	(vm (gensym)))
-  `(def-insn ,name (,vm)
+  `(def-insn ,name (,vm) ,doc
      (let* ((,a (stack-pop ,vm))
 	    (,b (stack-pop ,vm)))
        (stack-push ,vm (,sym ,a ,b))
        (next ,vm)))))
 
-(def-binary-insn + cl:+)
-(def-binary-insn - cl:-)
-(def-binary-insn * cl:*)
-(def-binary-insn > cl:>)
-(def-binary-insn < cl:<)
-(def-binary-insn :cons cl:cons)
+(def-binary-insn + cl:+ "plus")
+(def-binary-insn - cl:- "minus")
+(def-binary-insn * cl:* "multiply")
+(def-binary-insn > cl:> "> op")
+(def-binary-insn < cl:< "< op")
+
+(def-insn cons (vm)
+  "CONStruct."
+  (let* ((a (stack-pop vm))
+	 (b (stack-pop vm)))
+    (if (eql b :NIL)
+       (stack-push vm (cons a nil))
+       (stack-push vm (cons a b)))
+    (next vm)))
+
 
 ;; SEL CT CF CONT
 (def-insn sel (vm)
+  "SEL"
   (let ((x (stack-pop vm))
 	(ct (code-ref vm (pc-of vm)))
 	(cf (code-ref vm (1+ (pc-of vm))))
@@ -345,12 +404,14 @@ other test functions or use 'check' to run individual test cases."
     (next vm)))
 
 (def-insn join (vm)
+  "JOIN."
   (let ((cr (dump-pop vm)))
     (setf (pc-of vm) cr)
     (next vm)))
 
 ;; LD
 (def-insn ld (vm)
+  "LoaD."
   (let ((level (code-ref vm (pc-of vm)))
 	(j (code-ref vm (1+ (pc-of vm)))))
     (stack-push vm (locate level j (env-of vm)))
@@ -358,13 +419,20 @@ other test functions or use 'check' to run individual test cases."
     (next vm)))
 
 (def-insn ldf (vm)
+  "LoaDFunction."
   (let ((fbody-pc (fetch-operand vm))
 	(cont (code-ref vm (+ 1 (pc-of vm)))))
     (stack-push vm (cons fbody-pc (env-of vm)))
     (setf (pc-of vm) cont)
     (next vm)))
 
+
+;; ((f.e') v.s) e (AP.c) d      ->  NIL (v.e') f (s e c.d)
+;;   ((((f . e2) v . s) e ('AP . c) d)
+;;     (secd 'NIL (cons v e2) f (append (list s e c) d)))
+
 (def-insn ap (vm)
+  "Apply"
   (destructuring-bind ((fbody-pc . fenv) v . s) (stack-of vm)
     (let ((e (env-of vm)))
       (setf (stack-of vm) :NIL)
@@ -374,13 +442,14 @@ other test functions or use 'check' to run individual test cases."
       (next vm))))
 
 (def-insn rtn (vm)
+  "ReTurN"
   (destructuring-bind (s e c . d) (dump-of vm)
-    (declare (ignore e))
     (let ((x (stack-pop vm)))
       (setf (stack-of vm) s)
       (stack-push vm x)
-      (setf (dump-of vm) d)
+      (setf (env-of vm) e)
       (setf (pc-of vm) c)
+      (setf (dump-of vm) d)
       (next vm))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -456,7 +525,8 @@ other test functions or use 'check' to run individual test cases."
       (cmp #(:NIL :LDF 4 8 :LD 1 2 :RTN :AP) '(:NIL :LDF (:LD (1 . 2) :RTN) :AP))
       (cmp #(:NIL :LDF 4 12 :LD 1 2 :LD 1 1 :+ :RTN :AP) '(:NIL :LDF (:LD (1 . 2) :LD (1 . 1) :+ :RTN) :AP)))))
 
-(deftest test-run ()
+
+(deftest test-run-base ()
   (labels ((cmp (expect exp)
 	     (equal expect (stack-top (run exp)))))
     (check
@@ -467,11 +537,104 @@ other test functions or use 'check' to run individual test cases."
       (cmp -1 '((lambda (x y) (- x y)) 2 3))
       (cmp 4 '((lambda (z) ((lambda (x y) (+ (- x y) z)) 3 5)) 6)))))
 
-(test-lookup)
+(deftest test-run-env ()
+  (labels ((cmp (expect exp env)
+	     (equal expect (stack-top (run-code exp :env env)))))
+    (check
+      (cmp 6 #(:LD 1 1 :STOP) '((6)))
+      (cmp 6 #(:LD 1 1 :STOP) '((6 2)))
+      (cmp 2 #(:LD 1 2 :STOP) '((6 2)))
+      (cmp 7 #(:LD 1 1 :STOP) '((7 10) (6 2)))
+      (cmp 10 #(:LD 1 2 :STOP) '((7 10) (6 2)))
+      (cmp 6 #(:LD 2 1 :STOP) '((7 10) (6 2)))
+      (cmp 2 #(:LD 2 2 :STOP) '((7 10) (6 2)))
+      )))
+
+(deftest test-run-let ()
+  (labels ((cmp (expect exp)
+	     (equal expect (stack-top (run exp)))))
+    (check
+      (cmp 12 '(let ((x 12)) x))
+      (cmp 8 '(let ((x 3) (y 8)) y))
+      (cmp 11 '(let ((x 3) (y 8))
+		(+ x y)))
+      (cmp 5 '(let ((x 3) (y 8) (z 1))
+		(- y x))))))
+
+(deftest test-run-lambda ()
+  (labels ((cmp (expect exp)
+	     (equal expect (stack-top (run exp)))))
+    (check
+      (cmp 20 '(let ((fn (lambda (x) (* 2 x))))
+		(fn 10))))))
+
+(deftest test-run-lambda-2 ()
+  (labels ((cmp (expect exp)
+	     (equal expect (stack-top (run exp)))))
+    (check
+      (cmp 12 '(let ((fn (lambda (x) (* 2 x))))
+		(fn (fn 3))))
+      (cmp 24 '(let ((fn (lambda (x) (* 2 x))))
+		(fn (fn (fn 3)))))
+      (cmp 11 '(let ((fn (lambda (x) (* 2 x)))
+		     (gn (lambda (x) (+ 5 x))))
+		(gn (fn 3))))
+      (cmp 30 '(let ((fn (lambda (x) (* 2 x)))
+		     (gn (lambda (x y) (+ x y))))
+		(gn (fn 10) (fn 5))))
+      (cmp 6 '(let ((fn (lambda (x) (* 2 x))))
+		(let ((gn (lambda (x) (+ 5 x))))
+		  (fn 3))))
+      (cmp 8 '(let ((fn (lambda (x) (* 2 x))))
+		(let ((fn (lambda (x) (+ 5 x))))
+		  (fn 3)))))))
+
+(deftest test-run-lambda-3 ()
+  (labels ((cmp (expect exp)
+	     (equal expect (stack-top (run exp)))))
+    (check
+      (cmp 8 '(let ((n 2))
+		(let ((fn (lambda (x) (* n x))))
+		  (fn 4))))
+      (cmp 11 '(let ((n 2) (m 3))
+		(let ((fn (lambda (x) (+ m (* n x)))))
+		  (fn 4))))
+      )))
+
+
+(deftest test-run-lambda-3 ()
+  (labels ((cmp (expect exp)
+	     (equal expect (stack-top (run exp)))))
+    (check
+      (cmp 12 '(let ((fn (lambda (x) (* 2 x))))
+		(fn (fn 3))))
+      (cmp 24 '(let ((fn (lambda (x) (* 2 x))))
+		(fn (fn (fn 3)))))
+      (cmp 11 '(let ((fn (lambda (x) (* 2 x)))
+		     (gn (lambda (x) (+ 5 x))))
+		(gn (fn 3))))
+      (cmp 19 '(let ((fn (lambda (x) (* 2 x))))
+		(let ((gn (lambda (x y) (+ x (fn y)))))
+		  (gn 13 3))))
+      )))
 
 (deftest test-compile ()
   (combine-results 
     (test-pass1)
     (test-pass2)))
+
+(deftest test-run ()
+  (combine-results
+    (test-run-base)
+    (test-run-let)
+    (test-run-lambda)
+    (test-run-lambda-2)
+    (test-run-lambda-3)))
+
+(deftest test-all ()
+  (combine-results
+    (test-lookup)
+    (test-compile)
+    (test-run)))
 
 ;(test-compile)
